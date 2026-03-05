@@ -5,7 +5,8 @@ import (
 	"fmt"
 )
 
-// Tool 定义了一个可被 LLM 调用的工具
+// Tool 定义了一个可被 LLM 调用的工具（能力点）
+// 一个 Skill 包可以注册多个 Tool，每个 Tool 代表一个独立的可调用能力
 type Tool struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description"`
@@ -13,22 +14,23 @@ type Tool struct {
 	Handler     ToolHandler            `json:"-"`
 }
 
-// ToolHandler 是工具的执行函数
+// ToolHandler 是 Tool 的执行函数
 type ToolHandler func(params map[string]interface{}) (interface{}, error)
 
-// ToolRegistry 管理所有可用的工具
+// ToolRegistry 管理所有可用的 Tool
+// Agent 使用这个注册器加载和调用所有已安装的 Tool
 type ToolRegistry struct {
 	tools map[string]*Tool
 }
 
-// NewToolRegistry 创建新的工具注册表
+// NewToolRegistry 创建新的 Tool 注册表
 func NewToolRegistry() *ToolRegistry {
 	return &ToolRegistry{
 		tools: make(map[string]*Tool),
 	}
 }
 
-// Register 注册一个工具
+// Register 注册一个 Tool
 func (tr *ToolRegistry) Register(tool *Tool) {
 	if tool == nil {
 		return
@@ -39,7 +41,7 @@ func (tr *ToolRegistry) Register(tool *Tool) {
 	tr.tools[tool.Name] = tool
 }
 
-// GetTool 获取指定名称的工具
+// GetTool 获取指定名称的 Tool
 func (tr *ToolRegistry) GetTool(name string) (*Tool, error) {
 	tool, exists := tr.tools[name]
 	if !exists {
@@ -48,7 +50,7 @@ func (tr *ToolRegistry) GetTool(name string) (*Tool, error) {
 	return tool, nil
 }
 
-// GetAllTools 获取所有工具（用于 Function Calling）
+// GetAllTools 获取所有 Tool（用于 Function Calling）
 func (tr *ToolRegistry) GetAllTools() []map[string]interface{} {
 	var tools []map[string]interface{}
 	for _, tool := range tr.tools {
@@ -64,7 +66,7 @@ func (tr *ToolRegistry) GetAllTools() []map[string]interface{} {
 	return tools
 }
 
-// ExecuteTool 执行指定的工具
+// ExecuteTool 执行指定的 Tool
 func (tr *ToolRegistry) ExecuteTool(name string, argumentsJSON string) (interface{}, error) {
 	tool, err := tr.GetTool(name)
 	if err != nil {
@@ -81,11 +83,11 @@ func (tr *ToolRegistry) ExecuteTool(name string, argumentsJSON string) (interfac
 		params = make(map[string]interface{})
 	}
 
-	// 执行工具
+	// 执行 Tool
 	return tool.Handler(params)
 }
 
-// GetToolNames 获取所有工具名称（用于 Prompt 描述）
+// GetToolNames 获取所有 Tool 名称（用于 Prompt 描述）
 func (tr *ToolRegistry) GetToolNames() []string {
 	names := make([]string, 0, len(tr.tools))
 	for name := range tr.tools {

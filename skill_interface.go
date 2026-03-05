@@ -8,12 +8,12 @@ import (
 // SkillMetadata Skill 元数据
 type SkillMetadata struct {
 	Name         string                 `json:"name"`         // Skill 名称（包路径）
-	Version      string                 `json:"version"`     // Skill 版本
-	Description  string                 `json:"description"` // Skill 描述
-	Author       string                 `json:"author"`      // Skill 作者
-	Tags         []string               `json:"tags"`        // Skill 标签
+	Version      string                 `json:"version"`      // Skill 版本
+	Description  string                 `json:"description"`  // Skill 描述
+	Author       string                 `json:"author"`       // Skill 作者
+	Tags         []string               `json:"tags"`         // Skill 标签
 	Dependencies []string               `json:"dependencies"` // 依赖的其他 Skill
-	Config       map[string]interface{} `json:"config"`     // Skill 配置
+	Config       map[string]interface{} `json:"config"`       // Skill 配置
 }
 
 // SkillRegisterFunc 是 skill 包的注册函数类型
@@ -21,6 +21,7 @@ type SkillMetadata struct {
 // 这样可以通过 import _ "skill-package" 的方式自动注册
 // agent 参数是 interface{} 类型，Skill 可以通过类型断言来使用 Agent 的功能
 // 例如：executor, ok := agent.(AgentToolExecutor)
+// registry 参数是 ToolRegistry，Skill 包通过它向 Agent 注册一个或多个 Tool
 type SkillRegisterFunc func(registry *ToolRegistry, agent interface{}) error
 
 // SkillLifecycle Skill 生命周期接口
@@ -47,9 +48,9 @@ var (
 	skillRegistryMutex  sync.RWMutex
 )
 
-// RegisterSkill 注册一个 skill（由 skill 包在 init() 中调用）
-// name: skill 的名称（建议使用包路径，如 "github.com/OctoSucker/skill-agent-chat"）
-// registerFunc: 注册函数，用于注册 skill 提供的工具
+// RegisterSkill 注册一个 skill 包（由 skill 包在 init() 中调用）
+// name: skill 包的名称（建议使用包路径，如 "github.com/OctoSucker/skill-agent-chat"）
+// registerFunc: 注册函数，用于注册 skill 包提供的 Skill（能力点）
 func RegisterSkill(name string, registerFunc SkillRegisterFunc) {
 	RegisterSkillWithMetadata(name, SkillMetadata{
 		Name: name,
@@ -95,9 +96,9 @@ type SkillContext struct {
 	Lifecycle SkillLifecycle
 }
 
-// LoadAllRegisteredSkills 加载所有已注册的 skill 到工具注册表
-// 这个方法在 Agent 初始化时调用，会自动加载所有通过 import 注册的 skill
-// configs: Skill 配置映射，key 为 Skill 名称，value 为配置
+// LoadAllRegisteredSkills 加载所有已注册的 skill 包到 Tool 注册表
+// 这个方法在 Agent 初始化时调用，会自动加载所有通过 import 注册的 skill 包
+// configs: Skill 配置映射，key 为 Skill 包名称，value 为配置
 // agent: Agent 实例，Skill 可以通过类型断言来使用
 func LoadAllRegisteredSkills(toolRegistry *ToolRegistry, agent interface{}, configs map[string]map[string]interface{}) error {
 	skillRegistryMutex.RLock()
@@ -137,7 +138,7 @@ func LoadAllRegisteredSkills(toolRegistry *ToolRegistry, agent interface{}, conf
 		}
 		_ = ctx // 保留用于未来扩展
 
-		// 注册工具（传递 agent 实例）
+		// 注册 Skill 提供的 Tool（传递 agent 实例）
 		if err := skillInfo.Register(toolRegistry, agent); err != nil {
 			return fmt.Errorf("failed to register skill %s: %w", skillInfo.Metadata.Name, err)
 		}
