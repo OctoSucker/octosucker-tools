@@ -39,6 +39,7 @@ type SkillInfo struct {
 	Register  SkillRegisterFunc
 	Lifecycle SkillLifecycle
 	Loaded    bool
+	InitError error // 初始化错误（如果有）
 }
 
 // globalSkillRegistry 全局 skill 注册表
@@ -85,28 +86,25 @@ func RegisterSkillWithMetadata(
 		Register:  registerFunc,
 		Lifecycle: lifecycle,
 		Loaded:    false,
+		InitError: nil,
 	}
-}
-
-// SkillContext Skill 上下文，传递给注册函数
-type SkillContext struct {
-	Registry  *ToolRegistry
-	Agent     interface{} // Agent 实例（通过类型断言使用）
-	Config    map[string]interface{}
-	Lifecycle SkillLifecycle
 }
 
 // LoadAllRegisteredSkills 加载所有已注册的 skill 包到 Tool 注册表
 // 这个方法在 Agent 初始化时调用，会自动加载所有通过 import 注册的 skill 包
+// 注意：即使某些 Skill 初始化失败，也会继续加载其他 Skill，并记录失败信息
 // configs: Skill 配置映射，key 为 Skill 包名称，value 为配置
 // agent: Agent 实例，Skill 可以通过类型断言来使用
-func LoadAllRegisteredSkills(toolRegistry *ToolRegistry, agent interface{}, configs map[string]map[string]interface{}) error {
+// 返回：加载失败的 Skill 列表（格式：map[skillName]error）
+func LoadAllRegisteredSkills(toolRegistry *ToolRegistry, agent interface{}, configs map[string]map[string]interface{}) map[string]error {
 	skillRegistryMutex.RLock()
 	skills := make([]*SkillInfo, 0, len(globalSkillRegistry))
 	for _, info := range globalSkillRegistry {
 		skills = append(skills, info)
 	}
 	skillRegistryMutex.RUnlock()
+
+	failedSkills := make(map[string]error)
 
 	// 加载每个 skill
 	for _, skillInfo := range skills {
@@ -125,28 +123,26 @@ func LoadAllRegisteredSkills(toolRegistry *ToolRegistry, agent interface{}, conf
 		// 初始化 Skill（如果有生命周期接口）
 		if skillInfo.Lifecycle != nil {
 			if err := skillInfo.Lifecycle.Init(config); err != nil {
-				return fmt.Errorf("failed to init skill %s: %w", skillInfo.Metadata.Name, err)
+				skillInfo.InitError = err
+				failedSkills[skillInfo.Metadata.Name] = err
+				// 继续加载其他 Skill，不中断
+				continue
 			}
 		}
 
-		// 创建 Skill 上下文
-		ctx := &SkillContext{
-			Registry:  toolRegistry,
-			Agent:     agent,
-			Config:    config,
-			Lifecycle: skillInfo.Lifecycle,
-		}
-		_ = ctx // 保留用于未来扩展
-
 		// 注册 Skill 提供的 Tool（传递 agent 实例）
 		if err := skillInfo.Register(toolRegistry, agent); err != nil {
-			return fmt.Errorf("failed to register skill %s: %w", skillInfo.Metadata.Name, err)
+			skillInfo.InitError = err
+			failedSkills[skillInfo.Metadata.Name] = err
+			// 继续加载其他 Skill，不中断
+			continue
 		}
 
 		skillInfo.Loaded = true
+		skillInfo.InitError = nil
 	}
 
-	return nil
+	return failedSkills
 }
 
 // GetRegisteredSkillNames 获取所有已注册的 skill 名称
@@ -201,7 +197,55 @@ func CleanupAllSkills() error {
 			return fmt.Errorf("failed to cleanup skill %s: %w", skillInfo.Metadata.Name, err)
 		}
 		skillInfo.Loaded = false
+		skillInfo.InitError = nil
 	}
+
+	return nil
+}
+
+// ReloadSkill 重新加载指定的 Skill（使用新配置）
+// 如果 Skill 已经加载，会先清理再重新加载
+// config: Skill 的新配置（如果为 nil，则使用 SkillInfo.Metadata.Config）
+func ReloadSkill(name string, toolRegistry *ToolRegistry, agent interface{}, config map[string]interface{}) error {
+	skillRegistryMutex.Lock()
+	skillInfo, exists := globalSkillRegistry[name]
+	if !exists {
+		skillRegistryMutex.Unlock()
+		return fmt.Errorf("skill %s not found", name)
+	}
+	skillRegistryMutex.Unlock()
+
+	// 如果已经加载，先清理
+	if skillInfo.Loaded && skillInfo.Lifecycle != nil {
+		if err := skillInfo.Lifecycle.Cleanup(); err != nil {
+			return fmt.Errorf("failed to cleanup skill %s before reload: %w", name, err)
+		}
+		skillInfo.Loaded = false
+		skillInfo.InitError = nil
+	}
+
+	// 确定使用的配置
+	useConfig := config
+	if useConfig == nil {
+		useConfig = skillInfo.Metadata.Config
+	}
+
+	// 初始化 Skill（如果有生命周期接口）
+	if skillInfo.Lifecycle != nil {
+		if err := skillInfo.Lifecycle.Init(useConfig); err != nil {
+			skillInfo.InitError = err
+			return fmt.Errorf("failed to init skill %s: %w", name, err)
+		}
+	}
+
+	// 注册 Skill 提供的 Tool（传递 agent 实例）
+	if err := skillInfo.Register(toolRegistry, agent); err != nil {
+		skillInfo.InitError = err
+		return fmt.Errorf("failed to register skill %s: %w", name, err)
+	}
+
+	skillInfo.Loaded = true
+	skillInfo.InitError = nil
 
 	return nil
 }
