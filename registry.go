@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 )
@@ -14,8 +15,8 @@ type Tool struct {
 	Handler     ToolHandler            `json:"-"`
 }
 
-// ToolHandler 是 Tool 的执行函数
-type ToolHandler func(params map[string]interface{}) (interface{}, error)
+// ToolHandler 是 Tool 的执行函数，ctx 用于取消与超时
+type ToolHandler func(ctx context.Context, params map[string]interface{}) (interface{}, error)
 
 // ToolRegistry 管理所有可用的 Tool
 // Agent 使用这个注册器加载和调用所有已安装的 Tool
@@ -66,8 +67,8 @@ func (tr *ToolRegistry) GetAllTools() []map[string]interface{} {
 	return tools
 }
 
-// ExecuteTool 执行指定的 Tool
-func (tr *ToolRegistry) ExecuteTool(name string, argumentsJSON string) (interface{}, error) {
+// ExecuteTool 执行指定的 Tool，ctx 用于取消与超时
+func (tr *ToolRegistry) ExecuteTool(ctx context.Context, name string, argumentsJSON string) (interface{}, error) {
 	tool, err := tr.GetTool(name)
 	if err != nil {
 		return nil, err
@@ -84,7 +85,7 @@ func (tr *ToolRegistry) ExecuteTool(name string, argumentsJSON string) (interfac
 	}
 
 	// 执行 Tool
-	return tool.Handler(params)
+	return tool.Handler(ctx, params)
 }
 
 // GetToolNames 获取所有 Tool 名称（用于 Prompt 描述）

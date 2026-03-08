@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -42,7 +43,7 @@ func RegisterBuiltinSkill(registry *ToolRegistry, agent interface{}) error {
 			},
 			"required": []string{"message"},
 		},
-		Handler: func(params map[string]interface{}) (interface{}, error) {
+		Handler: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
 			message, ok := params["message"].(string)
 			if !ok || message == "" {
 				return nil, fmt.Errorf("message is required")
@@ -79,7 +80,7 @@ func RegisterBuiltinSkill(registry *ToolRegistry, agent interface{}) error {
 			"type":       "object",
 			"properties": map[string]interface{}{},
 		},
-		Handler: func(params map[string]interface{}) (interface{}, error) {
+		Handler: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
 			allSkills := GetAllSkillInfos()
 			skillsList := make([]map[string]interface{}, 0, len(allSkills))
 
@@ -131,7 +132,7 @@ func RegisterBuiltinSkill(registry *ToolRegistry, agent interface{}) error {
 			},
 			"required": []string{"skill_name"},
 		},
-		Handler: func(params map[string]interface{}) (interface{}, error) {
+		Handler: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
 			skillName, ok := params["skill_name"].(string)
 			if !ok || skillName == "" {
 				return nil, fmt.Errorf("skill_name is required")
@@ -173,7 +174,7 @@ func RegisterBuiltinSkill(registry *ToolRegistry, agent interface{}) error {
 				},
 			},
 		},
-		Handler: func(params map[string]interface{}) (interface{}, error) {
+		Handler: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
 			// 尝试从 agent 参数获取 configPath
 			var configPath string
 			if configPathProvider, ok := agent.(interface {
