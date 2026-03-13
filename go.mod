@@ -1,4 +1,4 @@
-module github.com/OctoSucker/octosucker-skill
+module github.com/OctoSucker/octosucker-tools
 
 go 1.24.4
 

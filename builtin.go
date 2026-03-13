@@ -1,4 +1,4 @@
-package skill
+package tools
 
 import (
 	"context"
@@ -8,25 +8,20 @@ import (
 	"os"
 )
 
-// BuiltinSkill 内置 Skill，提供 Skill 系统的管理工具
-type BuiltinSkill struct{}
+type BuiltinToolProvider struct{}
 
-// Init 初始化内置 Skill（不需要配置，总是成功）
-func (s *BuiltinSkill) Init(config map[string]interface{}) error {
+func (s *BuiltinToolProvider) Init(config map[string]interface{}) error {
 	return nil
 }
 
-// Cleanup 清理内置 Skill
-func (s *BuiltinSkill) Cleanup() error {
+func (s *BuiltinToolProvider) Cleanup() error {
 	return nil
 }
 
-// RegisterBuiltinSkill 注册内置 Skill 提供的 Tool
-func RegisterBuiltinSkill(registry *ToolRegistry, agent interface{}) error {
-	// log_message Tool：让 LLM 可以打印日志，告知用户需要什么配置
+func RegisterBuiltinToolProvider(registry *ToolRegistry, agent interface{}) error {
 	registry.Register(&Tool{
 		Name:        "log_message",
-		Description: "打印日志消息，用于告知用户需要什么配置或信息。当 Skill 缺少配置时，可以使用此工具告知用户。",
+		Description: "打印日志消息，用于告知用户需要什么配置或信息。当 Tool provider 缺少配置时，可以使用此工具告知用户。",
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -54,7 +49,6 @@ func RegisterBuiltinSkill(registry *ToolRegistry, agent interface{}) error {
 				level = "info"
 			}
 
-			// 根据级别打印日志
 			switch level {
 			case "error":
 				log.Printf("[ERROR] %s", message)
@@ -72,20 +66,19 @@ func RegisterBuiltinSkill(registry *ToolRegistry, agent interface{}) error {
 		},
 	})
 
-	// list_skills Tool：列出所有 Skill 及其状态
 	registry.Register(&Tool{
-		Name:        "list_skills",
-		Description: "列出所有已注册的 Skill 及其状态（加载状态、错误信息等）。用于检查哪些 Skill 成功加载，哪些失败，以及失败原因。",
+		Name:        "list_tool_providers",
+		Description: "列出所有已注册的 Tool provider 及其状态（加载状态、错误信息等）。用于检查哪些成功加载，哪些失败，以及失败原因。",
 		Parameters: map[string]interface{}{
 			"type":       "object",
 			"properties": map[string]interface{}{},
 		},
 		Handler: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
-			allSkills := GetAllSkillInfos()
-			skillsList := make([]map[string]interface{}, 0, len(allSkills))
+			all := GetAllToolProviderInfos()
+			list := make([]map[string]interface{}, 0, len(all))
 
-			for name, info := range allSkills {
-				skillData := map[string]interface{}{
+			for name, info := range all {
+				item := map[string]interface{}{
 					"name":        name,
 					"version":     info.Metadata.Version,
 					"description": info.Metadata.Description,
@@ -95,47 +88,46 @@ func RegisterBuiltinSkill(registry *ToolRegistry, agent interface{}) error {
 				}
 
 				if info.InitError != nil {
-					skillData["init_error"] = info.InitError.Error()
-					skillData["status"] = "failed"
+					item["init_error"] = info.InitError.Error()
+					item["status"] = "failed"
 				} else if info.Loaded {
-					skillData["status"] = "loaded"
+					item["status"] = "loaded"
 				} else {
-					skillData["status"] = "not_loaded"
+					item["status"] = "not_loaded"
 				}
 
-				skillsList = append(skillsList, skillData)
+				list = append(list, item)
 			}
 
 			return map[string]interface{}{
 				"success": true,
-				"skills":  skillsList,
-				"count":   len(skillsList),
+				"tool_providers": list,
+				"count":         len(list),
 			}, nil
 		},
 	})
 
-	// reload_skill Tool：重新加载指定的 Skill（使用新配置）
 	registry.Register(&Tool{
-		Name:        "reload_skill",
-		Description: "重新加载指定的 Skill，使用提供的配置。如果 Skill 已经加载，会先清理再重新加载。用于在获取到必要配置后重新启动失败的 Skill。",
+		Name:        "reload_tool_provider",
+		Description: "重新加载指定的 Tool provider，使用提供的配置。若已加载会先清理再加载。用于在获取到必要配置后重新启动失败的 provider。",
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"skill_name": map[string]interface{}{
+				"provider_name": map[string]interface{}{
 					"type":        "string",
-					"description": "要重新加载的 Skill 名称（包路径，如 github.com/OctoSucker/skill-telegram）",
+					"description": "要重新加载的 provider 名称（模块路径，如 github.com/OctoSucker/tools-telegram）",
 				},
 				"config": map[string]interface{}{
 					"type":        "object",
-					"description": "Skill 的新配置（键值对）。如果不提供，则使用 Skill 的默认配置。",
+					"description": "新配置（键值对）。不提供则使用默认配置。",
 				},
 			},
-			"required": []string{"skill_name"},
+			"required": []string{"provider_name"},
 		},
 		Handler: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
-			skillName, ok := params["skill_name"].(string)
-			if !ok || skillName == "" {
-				return nil, fmt.Errorf("skill_name is required")
+			providerName, ok := params["provider_name"].(string)
+			if !ok || providerName == "" {
+				return nil, fmt.Errorf("provider_name is required")
 			}
 
 			var config map[string]interface{}
@@ -145,7 +137,7 @@ func RegisterBuiltinSkill(registry *ToolRegistry, agent interface{}) error {
 				}
 			}
 
-			err := ReloadSkill(skillName, registry, agent, config)
+			err := ReloadToolProvider(providerName, registry, agent, config)
 			if err != nil {
 				return map[string]interface{}{
 					"success": false,
@@ -154,17 +146,16 @@ func RegisterBuiltinSkill(registry *ToolRegistry, agent interface{}) error {
 			}
 
 			return map[string]interface{}{
-				"success":    true,
-				"skill_name": skillName,
-				"message":    fmt.Sprintf("Skill %s reloaded successfully", skillName),
+				"success":       true,
+				"provider_name": providerName,
+				"message":       fmt.Sprintf("Tool provider %s reloaded successfully", providerName),
 			}, nil
 		},
 	})
 
-	// read_config_file Tool：读取 Agent 配置文件内容
 	registry.Register(&Tool{
 		Name:        "read_config_file",
-		Description: "读取 Agent 配置文件内容。用于查看当前配置，特别是 Skill 配置（如 Telegram bot_token 等）。敏感信息（如 API keys）会被部分脱敏。",
+		Description: "读取 Agent 配置文件内容。用于查看当前配置，特别是 Tool provider 配置（如 Telegram bot_token 等）。敏感信息（如 API keys）会被部分脱敏。",
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -175,15 +166,11 @@ func RegisterBuiltinSkill(registry *ToolRegistry, agent interface{}) error {
 			},
 		},
 		Handler: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
-			// 尝试从 agent 参数获取 configPath
 			var configPath string
-			if configPathProvider, ok := agent.(interface {
-				GetConfigPath() string
-			}); ok {
+			if configPathProvider, ok := agent.(ConfigPathProvider); ok {
 				configPath = configPathProvider.GetConfigPath()
 			}
 
-			// 如果参数中提供了路径，优先使用
 			if path, ok := params["config_path"].(string); ok && path != "" {
 				configPath = path
 			}
@@ -192,19 +179,16 @@ func RegisterBuiltinSkill(registry *ToolRegistry, agent interface{}) error {
 				return nil, fmt.Errorf("config_path is required (either from agent or parameter)")
 			}
 
-			// 读取配置文件
 			data, err := os.ReadFile(configPath)
 			if err != nil {
 				return nil, fmt.Errorf("failed to read config file: %w", err)
 			}
 
-			// 解析 JSON
 			var config map[string]interface{}
 			if err := json.Unmarshal(data, &config); err != nil {
 				return nil, fmt.Errorf("failed to parse config file: %w", err)
 			}
 
-			// 脱敏敏感信息
 			sanitizedConfig := sanitizeConfig(config)
 
 			return map[string]interface{}{
@@ -218,7 +202,6 @@ func RegisterBuiltinSkill(registry *ToolRegistry, agent interface{}) error {
 	return nil
 }
 
-// sanitizeConfig 脱敏配置文件中的敏感信息
 func sanitizeConfig(config map[string]interface{}) map[string]interface{} {
 	sanitized := make(map[string]interface{})
 	for k, v := range config {
@@ -228,7 +211,6 @@ func sanitizeConfig(config map[string]interface{}) map[string]interface{} {
 				sanitizedLLM := make(map[string]interface{})
 				for lk, lv := range llmConfig {
 					if lk == "apiKey" {
-						// 脱敏 API Key（只显示前 10 个字符）
 						if apiKey, ok := lv.(string); ok && len(apiKey) > 10 {
 							sanitizedLLM[lk] = apiKey[:10] + "..."
 						} else {
@@ -247,7 +229,6 @@ func sanitizeConfig(config map[string]interface{}) map[string]interface{} {
 				sanitizedTelegram := make(map[string]interface{})
 				for tk, tv := range telegramConfig {
 					if tk == "bot_token" {
-						// 脱敏 Bot Token（只显示前 10 个字符）
 						if botToken, ok := tv.(string); ok && len(botToken) > 10 {
 							sanitizedTelegram[tk] = botToken[:10] + "..."
 						} else {
@@ -268,18 +249,17 @@ func sanitizeConfig(config map[string]interface{}) map[string]interface{} {
 	return sanitized
 }
 
-// init 注册内置 Skill
 func init() {
-	RegisterSkillWithMetadata(
-		"github.com/OctoSucker/octosucker-skill/builtin",
-		SkillMetadata{
-			Name:        "github.com/OctoSucker/octosucker-skill/builtin",
+	RegisterToolProviderWithMetadata(
+		"github.com/OctoSucker/octosucker-tools/builtin",
+		ToolProviderMetadata{
+			Name:        "github.com/OctoSucker/octosucker-tools/builtin",
 			Version:     "0.1.0",
-			Description: "Builtin Skill - 提供 Skill 系统的管理工具（log_message, list_skills, reload_skill）",
+			Description: "Builtin - 提供管理工具（log_message, list_tool_providers, reload_tool_provider）",
 			Author:      "OctoSucker",
 			Tags:        []string{"builtin", "core", "management"},
 		},
-		RegisterBuiltinSkill,
-		&BuiltinSkill{},
+		RegisterBuiltinToolProvider,
+		&BuiltinToolProvider{},
 	)
 }
