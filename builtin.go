@@ -100,9 +100,9 @@ func RegisterBuiltinToolProvider(registry *ToolRegistry, agent interface{}) erro
 			}
 
 			return map[string]interface{}{
-				"success": true,
+				"success":        true,
 				"tool_providers": list,
-				"count":         len(list),
+				"count":          len(list),
 			}, nil
 		},
 	})
