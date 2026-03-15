@@ -30,11 +30,10 @@ import (
 
 type MyProvider struct{}
 
-func (p *MyProvider) Init(config map[string]interface{}) error   { return nil }
-func (p *MyProvider) Cleanup() error                            { return nil }
-
-func registerMyProvider(registry *tools.ToolRegistry, agent interface{}) error {
-    registry.Register(&tools.Tool{
+func (p *MyProvider) Init(config map[string]interface{}, submitTask func(string) error) error { return nil }
+func (p *MyProvider) Cleanup() error                                                       { return nil }
+func (p *MyProvider) Register(registry *tools.ToolRegistry, agent interface{}, providerName string) error {
+    registry.RegisterTool(providerName, &tools.Tool{
         Name:        "my_tool",
         Description: "示例工具",
         Parameters: map[string]interface{}{
@@ -49,14 +48,11 @@ func registerMyProvider(registry *tools.ToolRegistry, agent interface{}) error {
 }
 
 func init() {
-    tools.RegisterToolProviderWithMetadata(
-        "github.com/your-org/tools-my",
-        tools.ToolProviderMetadata{
-            Description: "My custom tools",
-        },
-        registerMyProvider,
-        &MyProvider{},
-    )
+    tools.RegisterToolProvider(&tools.ToolProviderInfo{
+        Name:        "github.com/your-org/tools-my",
+        Description: "My custom tools",
+        Provider:    &MyProvider{},
+    })
 }
 ```
 

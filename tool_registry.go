@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"sync"
 )
 
 type Tool struct {
@@ -13,9 +15,11 @@ type Tool struct {
 	Handler     ToolHandler            `json:"-"`
 }
 
+
 type ToolHandler func(ctx context.Context, params map[string]interface{}) (interface{}, error)
 
 type ToolRegistry struct {
+	mu    sync.RWMutex
 	tools map[string]*Tool
 }
 
@@ -25,17 +29,22 @@ func NewToolRegistry() *ToolRegistry {
 	}
 }
 
-func (tr *ToolRegistry) Register(tool *Tool) {
+func (tr *ToolRegistry) RegisterTool(providerName string, tool *Tool) {
 	if tool == nil {
 		return
 	}
 	if tool.Handler == nil {
 		panic(fmt.Sprintf("tool %s must have a handler", tool.Name))
 	}
-	tr.tools[tool.Name] = tool
+	fullName := providerName + "/" + tool.Name
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	tr.tools[fullName] = tool
 }
 
 func (tr *ToolRegistry) GetTool(name string) (*Tool, error) {
+	tr.mu.RLock()
+	defer tr.mu.RUnlock()
 	tool, exists := tr.tools[name]
 	if !exists {
 		return nil, fmt.Errorf("tool %s not found", name)
@@ -44,12 +53,20 @@ func (tr *ToolRegistry) GetTool(name string) (*Tool, error) {
 }
 
 func (tr *ToolRegistry) GetAllTools() []map[string]interface{} {
+	tr.mu.RLock()
+	defer tr.mu.RUnlock()
 	var tools []map[string]interface{}
-	for _, tool := range tr.tools {
+	names := make([]string, 0, len(tr.tools))
+	for name := range tr.tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		tool := tr.tools[name]
 		tools = append(tools, map[string]interface{}{
 			"type": "function",
 			"function": map[string]interface{}{
-				"name":        tool.Name,
+				"name":        name,
 				"description": tool.Description,
 				"parameters":  tool.Parameters,
 			},
@@ -77,9 +94,12 @@ func (tr *ToolRegistry) ExecuteTool(ctx context.Context, name string, argumentsJ
 }
 
 func (tr *ToolRegistry) GetToolNames() []string {
+	tr.mu.RLock()
+	defer tr.mu.RUnlock()
 	names := make([]string, 0, len(tr.tools))
 	for name := range tr.tools {
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
 }

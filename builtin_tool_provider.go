@@ -6,11 +6,28 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
+	"strings"
+	"sync"
+)
+
+var (
+	builtinConfigPath string
+	builtinSubmitTask func(string) error
+	builtinConfigMu   sync.RWMutex
 )
 
 type BuiltinToolProvider struct{}
 
-func (s *BuiltinToolProvider) Init(config map[string]interface{}) error {
+func (s *BuiltinToolProvider) Init(config map[string]interface{}, submitTask func(string) error) error {
+	builtinConfigMu.Lock()
+	defer builtinConfigMu.Unlock()
+	if config != nil {
+		if p, ok := config["config_path"].(string); ok {
+			builtinConfigPath = p
+		}
+	}
+	builtinSubmitTask = submitTask
 	return nil
 }
 
@@ -18,8 +35,8 @@ func (s *BuiltinToolProvider) Cleanup() error {
 	return nil
 }
 
-func RegisterBuiltinToolProvider(registry *ToolRegistry, agent interface{}) error {
-	registry.Register(&Tool{
+func (s *BuiltinToolProvider) Register(registry *ToolRegistry, agent interface{}, providerName string) error {
+	registry.RegisterTool(providerName, &Tool{
 		Name:        "log_message",
 		Description: "打印日志消息，用于告知用户需要什么配置或信息。当 Tool provider 缺少配置时，可以使用此工具告知用户。",
 		Parameters: map[string]interface{}{
@@ -66,7 +83,7 @@ func RegisterBuiltinToolProvider(registry *ToolRegistry, agent interface{}) erro
 		},
 	})
 
-	registry.Register(&Tool{
+	registry.RegisterTool(providerName, &Tool{
 		Name:        "list_tool_providers",
 		Description: "列出所有已注册的 Tool provider 及其状态（加载状态、错误信息等）。用于检查哪些成功加载，哪些失败，以及失败原因。",
 		Parameters: map[string]interface{}{
@@ -75,18 +92,33 @@ func RegisterBuiltinToolProvider(registry *ToolRegistry, agent interface{}) erro
 		},
 		Handler: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
 			all := GetAllToolProviderInfos()
-			list := make([]map[string]interface{}, 0, len(all))
+			providerNames := make([]string, 0, len(all))
+			for n := range all {
+				providerNames = append(providerNames, n)
+			}
+			sort.Slice(providerNames, func(i, j int) bool { return len(providerNames[j]) < len(providerNames[i]) })
+			providerToTools := make(map[string][]string)
+			for _, fullName := range registry.GetToolNames() {
+				for _, providerName := range providerNames {
+					prefix := providerName + "/"
+					if strings.HasPrefix(fullName, prefix) {
+						providerToTools[providerName] = append(providerToTools[providerName], fullName[len(prefix):])
+						break
+					}
+				}
+			}
+			for name := range providerToTools {
+				sort.Strings(providerToTools[name])
+			}
 
+			list := make([]map[string]interface{}, 0, len(all))
 			for name, info := range all {
 				item := map[string]interface{}{
 					"name":        name,
-					"version":     info.Metadata.Version,
-					"description": info.Metadata.Description,
-					"author":      info.Metadata.Author,
-					"tags":        info.Metadata.Tags,
+					"description": info.Description,
 					"loaded":      info.Loaded,
+					"tools":       providerToTools[name],
 				}
-
 				if info.InitError != nil {
 					item["init_error"] = info.InitError.Error()
 					item["status"] = "failed"
@@ -95,7 +127,6 @@ func RegisterBuiltinToolProvider(registry *ToolRegistry, agent interface{}) erro
 				} else {
 					item["status"] = "not_loaded"
 				}
-
 				list = append(list, item)
 			}
 
@@ -107,7 +138,7 @@ func RegisterBuiltinToolProvider(registry *ToolRegistry, agent interface{}) erro
 		},
 	})
 
-	registry.Register(&Tool{
+	registry.RegisterTool(providerName, &Tool{
 		Name:        "reload_tool_provider",
 		Description: "重新加载指定的 Tool provider，使用提供的配置。若已加载会先清理再加载。用于在获取到必要配置后重新启动失败的 provider。",
 		Parameters: map[string]interface{}{
@@ -136,8 +167,10 @@ func RegisterBuiltinToolProvider(registry *ToolRegistry, agent interface{}) erro
 					config = configMap
 				}
 			}
-
-			err := ReloadToolProvider(providerName, registry, agent, config)
+			builtinConfigMu.RLock()
+			fn := builtinSubmitTask
+			builtinConfigMu.RUnlock()
+			err := reloadToolProvider(providerName, registry, agent, config, fn)
 			if err != nil {
 				return map[string]interface{}{
 					"success": false,
@@ -153,7 +186,7 @@ func RegisterBuiltinToolProvider(registry *ToolRegistry, agent interface{}) erro
 		},
 	})
 
-	registry.Register(&Tool{
+	registry.RegisterTool(providerName, &Tool{
 		Name:        "read_config_file",
 		Description: "读取 Agent 配置文件内容。用于查看当前配置，特别是 Tool provider 配置（如 Telegram bot_token 等）。敏感信息（如 API keys）会被部分脱敏。",
 		Parameters: map[string]interface{}{
@@ -166,17 +199,14 @@ func RegisterBuiltinToolProvider(registry *ToolRegistry, agent interface{}) erro
 			},
 		},
 		Handler: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
-			var configPath string
-			if configPathProvider, ok := agent.(ConfigPathProvider); ok {
-				configPath = configPathProvider.GetConfigPath()
-			}
-
+			builtinConfigMu.RLock()
+			configPath := builtinConfigPath
+			builtinConfigMu.RUnlock()
 			if path, ok := params["config_path"].(string); ok && path != "" {
 				configPath = path
 			}
-
 			if configPath == "" {
-				return nil, fmt.Errorf("config_path is required (either from agent or parameter)")
+				return nil, fmt.Errorf("config_path is required (set in builtin provider config or pass as parameter)")
 			}
 
 			data, err := os.ReadFile(configPath)
@@ -202,46 +232,64 @@ func RegisterBuiltinToolProvider(registry *ToolRegistry, agent interface{}) erro
 	return nil
 }
 
+func reloadToolProvider(name string, toolRegistry *ToolRegistry, agent interface{}, config map[string]interface{}, submitTask func(string) error) error {
+	toolProviderRegistryMutex.Lock()
+	info, exists := globalToolProviderRegistry[name]
+	if !exists {
+		toolProviderRegistryMutex.Unlock()
+		return fmt.Errorf("tool provider %s not found", name)
+	}
+	toolProviderRegistryMutex.Unlock()
+
+	if info.Loaded && info.Provider != nil {
+		if err := info.Provider.Cleanup(); err != nil {
+			return fmt.Errorf("failed to cleanup tool provider %s before reload: %w", name, err)
+		}
+		info.Loaded = false
+		info.InitError = nil
+	}
+
+	if info.Provider != nil {
+		if err := info.Provider.Init(config, submitTask); err != nil {
+			info.InitError = err
+			return fmt.Errorf("failed to init tool provider %s: %w", name, err)
+		}
+	}
+
+	if err := info.Provider.Register(toolRegistry, agent, name); err != nil {
+		info.InitError = err
+		return fmt.Errorf("failed to register tool provider %s: %w", name, err)
+	}
+
+	info.Loaded = true
+	info.InitError = nil
+
+	return nil
+}
+
 func sanitizeConfig(config map[string]interface{}) map[string]interface{} {
+	if config == nil {
+		return nil
+	}
+	return sanitizeMap(config)
+}
+
+func sanitizeMap(src map[string]interface{}) map[string]interface{} {
 	sanitized := make(map[string]interface{})
-	for k, v := range config {
-		switch k {
-		case "llm":
-			if llmConfig, ok := v.(map[string]interface{}); ok {
-				sanitizedLLM := make(map[string]interface{})
-				for lk, lv := range llmConfig {
-					if lk == "apiKey" {
-						if apiKey, ok := lv.(string); ok && len(apiKey) > 10 {
-							sanitizedLLM[lk] = apiKey[:10] + "..."
-						} else {
-							sanitizedLLM[lk] = lv
-						}
-					} else {
-						sanitizedLLM[lk] = lv
-					}
-				}
-				sanitized[k] = sanitizedLLM
+	for k, v := range src {
+		if isSensitiveKey(k) {
+			if s, ok := v.(string); ok {
+				sanitized[k] = maskSecret(s)
 			} else {
-				sanitized[k] = v
+				sanitized[k] = "***"
 			}
-		case "telegram":
-			if telegramConfig, ok := v.(map[string]interface{}); ok {
-				sanitizedTelegram := make(map[string]interface{})
-				for tk, tv := range telegramConfig {
-					if tk == "bot_token" {
-						if botToken, ok := tv.(string); ok && len(botToken) > 10 {
-							sanitizedTelegram[tk] = botToken[:10] + "..."
-						} else {
-							sanitizedTelegram[tk] = tv
-						}
-					} else {
-						sanitizedTelegram[tk] = tv
-					}
-				}
-				sanitized[k] = sanitizedTelegram
-			} else {
-				sanitized[k] = v
-			}
+			continue
+		}
+		switch vv := v.(type) {
+		case map[string]interface{}:
+			sanitized[k] = sanitizeMap(vv)
+		case []interface{}:
+			sanitized[k] = sanitizeSlice(vv)
 		default:
 			sanitized[k] = v
 		}
@@ -249,17 +297,53 @@ func sanitizeConfig(config map[string]interface{}) map[string]interface{} {
 	return sanitized
 }
 
+func sanitizeSlice(src []interface{}) []interface{} {
+	out := make([]interface{}, 0, len(src))
+	for _, v := range src {
+		switch vv := v.(type) {
+		case map[string]interface{}:
+			out = append(out, sanitizeMap(vv))
+		case []interface{}:
+			out = append(out, sanitizeSlice(vv))
+		default:
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func isSensitiveKey(key string) bool {
+	k := strings.ToLower(strings.TrimSpace(key))
+	if k == "" {
+		return false
+	}
+	sensitive := []string{
+		"apikey", "api_key", "api-key",
+		"token", "bot_token", "access_token", "refresh_token",
+		"secret", "client_secret", "password", "passwd", "authorization",
+	}
+	for _, s := range sensitive {
+		if k == s || strings.Contains(k, s) {
+			return true
+		}
+	}
+	return false
+}
+
+func maskSecret(v string) string {
+	if v == "" {
+		return ""
+	}
+	if len(v) <= 8 {
+		return "***"
+	}
+	return v[:8] + "..."
+}
+
 func init() {
-	RegisterToolProviderWithMetadata(
-		"github.com/OctoSucker/octosucker-tools/builtin",
-		ToolProviderMetadata{
-			Name:        "github.com/OctoSucker/octosucker-tools/builtin",
-			Version:     "0.1.0",
-			Description: "Builtin - 提供管理工具（log_message, list_tool_providers, reload_tool_provider）",
-			Author:      "OctoSucker",
-			Tags:        []string{"builtin", "core", "management"},
-		},
-		RegisterBuiltinToolProvider,
-		&BuiltinToolProvider{},
-	)
+	RegisterToolProvider(&ToolProviderInfo{
+		Name:        "github.com/OctoSucker/octosucker-tools/builtin",
+		Description: "Builtin - 提供管理工具（log_message, list_tool_providers, reload_tool_provider）",
+		Provider:    &BuiltinToolProvider{},
+	})
 }
