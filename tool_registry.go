@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -14,7 +15,6 @@ type Tool struct {
 	Parameters  map[string]interface{} `json:"parameters"`
 	Handler     ToolHandler            `json:"-"`
 }
-
 
 type ToolHandler func(ctx context.Context, params map[string]interface{}) (interface{}, error)
 
@@ -45,30 +45,62 @@ func (tr *ToolRegistry) RegisterTool(providerName string, tool *Tool) {
 func (tr *ToolRegistry) GetTool(name string) (*Tool, error) {
 	tr.mu.RLock()
 	defer tr.mu.RUnlock()
-	tool, exists := tr.tools[name]
-	if !exists {
+	if strings.Contains(name, "/") {
+		tool, exists := tr.tools[name]
+		if !exists {
+			return nil, fmt.Errorf("tool %s not found", name)
+		}
+		return tool, nil
+	}
+	var found *Tool
+	var fullName string
+	for fn, t := range tr.tools {
+		if t.Name != name {
+			continue
+		}
+		if found != nil {
+			return nil, fmt.Errorf("ambiguous tool name %q: use full name (e.g. %s or %s)", name, fullName, fn)
+		}
+		found = t
+		fullName = fn
+	}
+	if found == nil {
 		return nil, fmt.Errorf("tool %s not found", name)
 	}
-	return tool, nil
+	return found, nil
+}
+
+func (tr *ToolRegistry) publicName(fullName string, tool *Tool, shortCount map[string]int) string {
+	if shortCount[tool.Name] == 1 {
+		return tool.Name
+	}
+	return fullName
 }
 
 func (tr *ToolRegistry) GetAllTools() []map[string]interface{} {
 	tr.mu.RLock()
 	defer tr.mu.RUnlock()
-	var tools []map[string]interface{}
-	names := make([]string, 0, len(tr.tools))
-	for name := range tr.tools {
-		names = append(names, name)
+	shortCount := make(map[string]int)
+	for _, t := range tr.tools {
+		shortCount[t.Name]++
 	}
-	sort.Strings(names)
-	for _, name := range names {
-		tool := tr.tools[name]
+	type item struct {
+		publicName string
+		tool       *Tool
+	}
+	var list []item
+	for fullName, tool := range tr.tools {
+		list = append(list, item{tr.publicName(fullName, tool, shortCount), tool})
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].publicName < list[j].publicName })
+	var tools []map[string]interface{}
+	for _, it := range list {
 		tools = append(tools, map[string]interface{}{
 			"type": "function",
 			"function": map[string]interface{}{
-				"name":        name,
-				"description": tool.Description,
-				"parameters":  tool.Parameters,
+				"name":        it.publicName,
+				"description": it.tool.Description,
+				"parameters":  it.tool.Parameters,
 			},
 		})
 	}
@@ -96,10 +128,32 @@ func (tr *ToolRegistry) ExecuteTool(ctx context.Context, name string, argumentsJ
 func (tr *ToolRegistry) GetToolNames() []string {
 	tr.mu.RLock()
 	defer tr.mu.RUnlock()
+	shortCount := make(map[string]int)
+	for _, t := range tr.tools {
+		shortCount[t.Name]++
+	}
 	names := make([]string, 0, len(tr.tools))
-	for name := range tr.tools {
-		names = append(names, name)
+	for fullName, tool := range tr.tools {
+		names = append(names, tr.publicName(fullName, tool, shortCount))
 	}
 	sort.Strings(names)
 	return names
+}
+
+func (tr *ToolRegistry) GetProviderToolShortNames() map[string][]string {
+	tr.mu.RLock()
+	defer tr.mu.RUnlock()
+	out := make(map[string][]string)
+	for fullName, tool := range tr.tools {
+		i := strings.LastIndex(fullName, "/")
+		if i < 0 {
+			continue
+		}
+		provider := fullName[:i]
+		out[provider] = append(out[provider], tool.Name)
+	}
+	for p := range out {
+		sort.Strings(out[p])
+	}
+	return out
 }

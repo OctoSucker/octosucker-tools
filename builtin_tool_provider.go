@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"sort"
 	"strings"
 	"sync"
 )
@@ -92,32 +91,18 @@ func (s *BuiltinToolProvider) Register(registry *ToolRegistry, agent interface{}
 		},
 		Handler: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
 			all := GetAllToolProviderInfos()
-			providerNames := make([]string, 0, len(all))
-			for n := range all {
-				providerNames = append(providerNames, n)
-			}
-			sort.Slice(providerNames, func(i, j int) bool { return len(providerNames[j]) < len(providerNames[i]) })
-			providerToTools := make(map[string][]string)
-			for _, fullName := range registry.GetToolNames() {
-				for _, providerName := range providerNames {
-					prefix := providerName + "/"
-					if strings.HasPrefix(fullName, prefix) {
-						providerToTools[providerName] = append(providerToTools[providerName], fullName[len(prefix):])
-						break
-					}
-				}
-			}
-			for name := range providerToTools {
-				sort.Strings(providerToTools[name])
-			}
-
+			providerToTools := registry.GetProviderToolShortNames()
 			list := make([]map[string]interface{}, 0, len(all))
 			for name, info := range all {
+				tools := providerToTools[name]
+				if tools == nil {
+					tools = []string{}
+				}
 				item := map[string]interface{}{
 					"name":        name,
 					"description": info.Description,
 					"loaded":      info.Loaded,
-					"tools":       providerToTools[name],
+					"tools":       tools,
 				}
 				if info.InitError != nil {
 					item["init_error"] = info.InitError.Error()
