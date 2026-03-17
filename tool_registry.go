@@ -157,3 +157,44 @@ func (tr *ToolRegistry) GetProviderToolShortNames() map[string][]string {
 	}
 	return out
 }
+
+func (tr *ToolRegistry) LoadAllToolProviders(agent interface{}, configs map[string]map[string]interface{}, submitTask func(string) error) map[string]error {
+	toolProviderRegistryMutex.RLock()
+	providers := make([]*ToolProviderInfo, 0, len(globalToolProviderRegistry))
+	for _, info := range globalToolProviderRegistry {
+		providers = append(providers, info)
+	}
+	toolProviderRegistryMutex.RUnlock()
+
+	failed := make(map[string]error)
+
+	for _, info := range providers {
+		if info.Loaded {
+			continue
+		}
+
+		var config map[string]interface{}
+		if configs != nil {
+			config, _ = configs[info.Name]
+		}
+
+		if info.Provider != nil {
+			if err := info.Provider.Init(config, submitTask); err != nil {
+				info.InitError = err
+				failed[info.Name] = err
+				continue
+			}
+		}
+
+		if err := info.Provider.Register(tr, agent, info.Name); err != nil {
+			info.InitError = err
+			failed[info.Name] = err
+			continue
+		}
+
+		info.Loaded = true
+		info.InitError = nil
+	}
+
+	return failed
+}
