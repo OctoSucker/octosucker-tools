@@ -39,7 +39,7 @@ func RegisterToolProvider(info *ToolProviderInfo) {
 	globalToolProviderRegistry[info.Name] = info
 }
 
-func LoadAllToolProviders(toolRegistry *ToolRegistry, agent interface{}, configs map[string]map[string]interface{}, submitTask func(string) error) map[string]error {
+func (tr *ToolRegistry) LoadAllToolProviders(agent interface{}, configs map[string]map[string]interface{}, submitTask func(string) error) map[string]error {
 	toolProviderRegistryMutex.RLock()
 	providers := make([]*ToolProviderInfo, 0, len(globalToolProviderRegistry))
 	for _, info := range globalToolProviderRegistry {
@@ -67,7 +67,7 @@ func LoadAllToolProviders(toolRegistry *ToolRegistry, agent interface{}, configs
 			}
 		}
 
-		if err := info.Provider.Register(toolRegistry, agent, info.Name); err != nil {
+		if err := info.Provider.Register(tr, agent, info.Name); err != nil {
 			info.InitError = err
 			failed[info.Name] = err
 			continue
